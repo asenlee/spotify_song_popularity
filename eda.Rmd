@@ -1,0 +1,562 @@
+---
+title: "Predicting the popularity of a song based on Spotify sound/musical metrics"
+author: "Asen Lee"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: no
+  bookdown::pdf_document2:
+    includes:
+      in_header: preamble.tex
+    number_sections: no
+    toc: no
+urlcolor: blue
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, error = TRUE, echo=FALSE)
+library(MASS)
+library(class)
+library(moments)
+library(ggplot2)
+library(GGally)
+library(psych)
+library(tidyverse)
+```
+
+# Introduction
+
+Hello, there. We’re music lovers in the 21st century, so vinyls are long gone, and so are CDs. Actually, so are Walkmans and iPods. We have streaming platforms like Spotify now. You probably use either that, or Apple Music. Let’s assume (like the statisticians we are) that you use Spotify. When you're listening to music on Spotify, you're probably not thinking about how it classifies each song based on a variety of criteria. But it does! Without rigorous music theory training, who knows what kind of information about music might even exist for us to know? A lot, actually. You see, Spotify evaluates each music based on elements like danceability (how suited a track is for dancing), energy (how intense and active a song is), valence (how cheerful a song makes you feel), among a slew of other parameters intended toward an API that isn’t all that hard to use. Curious about this exact thing, we found a dataset on Kaggle (link: https://www.kaggle.com/sashankpillai/spotify-top-200-charts-20202021) that was web scraped from the Spotify Web API, and we began to learn what characteristics are associated with driving music that became widely popular by looking into the measurements Spotify determines and calculates with their million dollar algorithms. We think this is an extremely worthwhile project because it’s immensely interesting to look into what goes into the making of a popular song.
+
+Here is a dictionary of all metrics utilised in Spotify's database. All our variables are just metrics from Spotify, and our explanations of the variables are from the Spotify Web API documentation, found at the aforementioned link. 
+
+We want to find out how and the extent to which various audio features from Spotify metrics affect how popular a song gets.
+
+The target/response variable:
+
+Popularity: The popularity of the track. The value will be between 0 and 100, with 100 being the most popular.
+
+Predictor variables:
+Danceability: Danceability describes how suitable a track is for dancing based on a combination of musical elements including tempo, rhythm stability, beat strength, and overall regularity. A value of 0.0 is least danceable and 1.0 is most danceable.
+Acousticness: A measure from 0.0 to 1.0 of whether the track is acoustic.
+Duration: The duration of the song in milliseconds (ms).
+Energy: Energy is a measure from 0.0 to 1.0 and represents a perceptual measure of intensity and activity. Typically, energetic tracks feel fast, loud, and noisy.
+Liveness: Detects the presence of an audience in the recording. Higher liveness values represent an increased probability that the track was performed live.
+Loudness: The overall loudness of a track in decibels (dB). Loudness values are averaged across the entire track. Values typical range between -60 and 0 db.
+Speechiness: Speechiness detects the presence of spoken words in a track. The more exclusively speech-like the recording (e.g. talk show, audio book, poetry), the closer to 1.0 the attribute value.
+Tempo: The overall estimated tempo of a track in beats per minute (BPM). In musical terminology, tempo is the speed or pace of a given piece and derives directly from the average beat duration.
+Valence: A measure from 0.0 to 1.0 describing the musical positiveness conveyed by a track. Tracks with high valence sound more positive (e.g. happy, cheerful, euphoric), while tracks with low valence sound more negative (e.g. sad, depressed, angry).
+Chord:A chord is any harmonic set of pitches/frequencies consisting of multiple notes that are heard as if sounding simultaneously.
+
+We excluded certain columns (Index, Song Name, Song ID, Release Date) available in the dataset due to them being identifiers which are meaningless for predicting. We also excluded these variables (Highest Charting Position, Number of Times Charted, Week of Highest Charting, Streams, Weeks Charted), because these variables may not be accessible or even exist for the new tracks. The rest of the excluded variables (Artist, Artist Followers, Genre) are out of scope.
+
+# Codes and Analysis
+
+```{r}
+# load dataset
+spotify_data <- read.csv("spotify_dataset.csv")
+spotify_data <- spotify_data[complete.cases(spotify_data) , ]
+variables <- c("Popularity", "Danceability", "Energy", "Loudness", 
+               "Speechiness", "Acousticness", "Liveness", "Tempo", 
+               "Valence", "Chord", "Duration..ms.")
+spotify_data <- spotify_data[variables]
+spotify_data$Chord <- as.factor(spotify_data$Chord)
+```
+
+## Univariate analysis: 
+
+### Popularity
+
+#### Density plot, Box plot, and Normal Q-Q plot
+\
+```{r out.width = "50%"}
+# some relevant descriptive statistics for Popularity
+describe(spotify_data$Popularity)
+
+# boxplot
+boxplot(spotify_data$Popularity,
+        main = toupper("Boxplot of Popularity"),
+        ylab = "Popularity",
+        col = "blue")
+
+# kernel density plot
+d <- density(spotify_data$Popularity)
+plot(d, main = "Kernel density of Popularity")
+polygon(d, col = "grey60", border = "blue")
+
+# qq plot
+qqnorm(spotify_data$Popularity, pch = 1, frame = FALSE)
+qqline(spotify_data$Popularity, col = "steelblue", lwd = 2)
+```
+
+**Comments on Popularity:**
+The average popularity for the 1545 instances of data is 70.09, the median is 73.00, and the standard deviation is 15.82.  Some songs are really unpopular, but most of them are between 60 and 90, so the data for popularity is extremely left skewed, as can be seen in the kernel density plot. The boxplot contains several outliers under the box as well. The QQ plot shows extreme skewness to the left and hence is not normally distributed.
+
+### Danceability
+
+#### Density plot, Box plot, and Normal Q-Q plot
+\
+```{r out.width = "50%"}
+# some relevant descriptive statistics for Danceability
+describe(spotify_data$Danceability)
+
+# boxplot
+boxplot(spotify_data$Danceability,
+        main = toupper("Boxplot of Danceability"),
+        ylab = "Danceability",
+        col = "blue")
+
+# kernel density plot
+d <- density(spotify_data$Danceability)
+plot(d, main = "Kernel density of Danceability")
+polygon(d, col = "grey60", border = "blue")
+
+# qq plot
+qqnorm(spotify_data$Danceability, pch = 1, frame = FALSE)
+qqline(spotify_data$Danceability, col = "steelblue", lwd = 2)
+```
+
+**Comments on Danceability:**
+The average danceability for the 1545 instances of data is 0.69, the median is 0.71, and the standard deviation is 0.14.  The data for danceability is slightly left skewed, as can be seen in the kernel density plot. The boxplot contains some outliers under the box as well. The QQ plot shows very slight skewness to the left, but is almost normally distributed.
+
+### Energy
+
+#### Density plot, Box plot, and Normal Q-Q plot
+\
+```{r out.width = "50%"}
+# some relevant descriptive statistics for Energy
+describe(spotify_data$Energy)
+
+# boxplot
+boxplot(spotify_data$Energy,
+        main = toupper("Boxplot of Energy"),
+        ylab = "Energy",
+        col = "blue")
+
+# kernel density plot
+d <- density(spotify_data$Energy)
+plot(d, main = "Kernel density of Energy")
+polygon(d, col = "grey60", border = "blue")
+
+# qq plot
+qqnorm(spotify_data$Energy, pch = 1, frame = FALSE)
+qqline(spotify_data$Energy, col = "steelblue", lwd = 2)
+```
+
+**Comments on Energy:**
+The average energy for the 1545 instances of data is 0.63, the median is 0.64, and the standard deviation is 0.16.  The data for energy is only slightly left skewed, as can be seen in the kernel density plot. The boxplot contains some outliers under the box as well. The QQ plot shows very slight skewness to the left, but is almost normally distributed.
+
+### Loudness
+
+#### Density plot, Box plot, and Normal Q-Q plot
+\
+```{r out.width = "50%"}
+# density plot
+ggplot(spotify_data, aes(x = Loudness)) + geom_density(fill = "grey60") +
+    labs(title="Density plot of Loudness")
+
+# boxplot
+boxplot(spotify_data$Loudness,
+        main = "Boxplot of Loudness",
+        ylab = "decibels (dB)",
+        col = "blue")
+```
+
+**Comments on Loudness:**
+From the density plot above, we can see that "Loudness" has a mean around -6.35 and is skewed to the left. Most of the observations are between the range of -10 to -2.5 dB.
+
+A similar trend can be found from the boxplot with the mean being around -6.35 and the plot showing a left skewed distribution.
+
+```{r out.width = "50%"}
+# qqplot
+qqnorm(spotify_data$Loudness, pch = 1, frame = FALSE)
+qqline(spotify_data$Loudness, col = "steelblue", lwd = 2)
+```
+
+**Comments on Q-Q plot:**
+The QQ plot shows skewness to the left and hence is not normally distributed.
+
+```{r out.width = "50%"}
+# summary stats
+loudness <- describe(spotify_data$Loudness)
+
+loudness.mean <- round(loudness$mean, 3)
+loudness.median <- round(loudness$median, 3)
+loudness.sd <- round(loudness$sd, 3)
+loudness.sk <- round(loudness$skew, 3)
+loudness.se <- round(loudness$se, 3)
+
+# table
+loudness.matrix <- matrix(c('Mean', 'Median', 'STD', 'Skewness', 'SE', 
+                           loudness.mean, loudness.median, loudness.sd,
+                           loudness.sk, loudness.se), nrow = 5)
+knitr::kable(x = loudness.matrix, col.names = c("Statistic", "Value"))
+```
+
+**Comments on Loudness:**
+The predictor, "Loudness", is measured in decibels (dB), and it has a mean of -6.35dB and a median of -5.99dB. The minimum value is found to be -25.17dB and the maximum value is 1.51dB. The feature has a standard deviation of 2.51 and a standard error of 0.064.
+
+### Speechiness
+
+#### Density plot, Box plot, and Normal Q-Q plot
+\
+```{r out.width = "50%"}
+# density plot
+ggplot(spotify_data, aes(x = Speechiness)) + geom_density(fill = "grey60") +
+  labs(title="Density plot of Speechiness")
+
+# boxplot
+boxplot(spotify_data$Speechiness,
+        main = "Boxplot of Speechiness",
+        ylab = "Presence of Speechiness",
+        col = "blue")
+```
+
+**Comments on Speechiness:**
+From the density plot above, we can see that "Speechiness" has a mean around 0.1 and is skewed to the right Most of the observations are between the range of 0.0 to 0.35.
+
+A similar trend can be found from the boxplot with the mean being around 0.1 and the plot showing a right skewed distribution.
+
+```{r out.width = "50%"}
+# qqplot
+qqnorm(spotify_data$Speechiness, pch = 1, frame = FALSE)
+qqline(spotify_data$Speechiness, col = "steelblue", lwd = 2)
+```
+
+**Comments on Q-Q plot:**
+The QQ plot show skewness to the right and hence is not normally distributed.
+
+```{r out.width = "50%"}
+# summary stats
+speechiness <- describe(spotify_data$Speechiness)
+
+speechiness.mean <- round(speechiness$mean, 3)
+speechiness.median <- round(speechiness$median, 3)
+speechiness.sd <- round(speechiness$sd, 3)
+speechiness.sk <- round(speechiness$skew, 3)
+speechiness.se <- round(speechiness$se, 3)
+
+# table
+speechiness.matrix <- matrix(c('Mean', 'Median', 'STD', 'Skewness', 'SE', 
+                           speechiness.mean, speechiness.median, 
+                           speechiness.sd, speechiness.sk, speechiness.se),
+                           nrow = 5)
+knitr::kable(x = speechiness.matrix, col.names = c("Statistic", "Value"))
+```
+
+**Comments on Speechiness:**
+The predictor, "Speechiness", is measured by the presence of spoken words in a track. For example, a value close to 1.0 indicates speech-like recordings such as talk shows and values between 0.66 to 0.33 may indicate rap music. Values lower than 0.33 are music and non-speech-like tracks. The predictor has a mean of 0.12 and a median of 0.08. The minimum value is found to be 0.02 and the maximum value is 0.88. The feature has a standard deviation of 0.11 and a standard error of 0003.
+
+### Acousticness
+
+#### Density plot, Box plot, and Normal Q-Q plot
+\
+```{r out.width = "50%"}
+# density plot
+ggplot(spotify_data, aes(x = Acousticness)) + geom_density(fill = "grey60") +
+  labs(title="Density plot of Acousticness")
+
+# boxplot
+boxplot(spotify_data$Acousticness,
+        main = "Boxplot of Acousticness",
+        ylab = "Confidence Measure",
+        col = "blue")
+```
+
+**Comments on Acousticness:**
+From the density plot above, we can see that "Acousticness" has a mean around 0.25 and is skewed to the right. Most of the observations are between the range of 0.0 to 0.4.
+
+A similar trend can be found from the boxplot with the mean being around 0.25 and the plot showing a right skewed distribution.
+
+```{r out.width = "50%"}
+# qqplot
+qqnorm(spotify_data$Acousticness, pch = 1, frame = FALSE)
+qqline(spotify_data$Acousticness, col = "steelblue", lwd = 2)
+```
+
+**Comments on Q-Q plot:**
+The QQ plot shows skewness to the right and hence is not normally distributed.
+
+```{r out.width = "50%"}
+# summary stats
+acousticness <- describe(spotify_data$Acousticness)
+
+acousticness.mean <- round(acousticness$mean, 3)
+acousticness.median <- round(acousticness$median, 3)
+acousticness.sd <- round(acousticness$sd, 3)
+acousticness.sk <- round(acousticness$skew, 3)
+acousticness.se <- round(acousticness$se, 3)
+
+# table
+acousticness.matrix <- matrix(c('Mean', 'Median', 'STD', 'Skewness', 'SE', 
+                           acousticness.mean, acousticness.median, 
+                           acousticness.sd, acousticness.sk, acousticness.se),
+                           nrow = 5)
+knitr::kable(x = acousticness.matrix, col.names = c("Statistic", "Value"))
+```
+
+**Comments on Acousticness:**
+The predictor, "Acousticness", is measured by a confidence measure from 0.0 to 1,0 of whether the track is acoustic or not. It has a mean of 0.25 and a median of 0.16. The minimum value is found to be 0.0 and the maximum value is 0.99. The feature has a standard deviation of 0.25 and a standard error of 0.006.
+
+### Liveness
+
+#### Density plot, Box plot, and Normal Q-Q plot
+\
+```{r out.width = "50%"}
+cur.var <- spotify_data$Liveness
+# density plot
+a <- ggplot(spotify_data, aes(x = cur.var)) + xlab('Liveness') +
+  labs(title="Density plot of Liveness")
+a +
+  geom_density() + 
+  geom_vline(aes(xintercept = mean(cur.var)), linetype = "dashed", size = 0.6)
+# boxplot
+boxplot(cur.var, xlab = 'All Tracks', ylab = 'Liveness', main = 'Box plot of Liveness')
+# qqplot
+qqnorm(cur.var, pch = 1, frame = FALSE)
+qqline(cur.var, col = "steelblue", lwd = 2)
+```
+
+```{r out.width = "50%"}
+# Measures of central tendency:
+cur.var.mean <- round(mean(cur.var), 3)
+cur.var.median <- round(median(cur.var), 3)
+```
+
+```{r out.width = "50%"}
+# Measures of dispersion and symmetry:
+cur.var.sd <- round(sd(cur.var), 3)
+cur.var.sk <- round(skewness(cur.var), 3)
+```
+
+```{r out.width = "50%"}
+# Table:
+cur.var.matrix <- matrix(c('Mean', 'Median', 'STD', 'Skewness', 
+                           cur.var.mean, cur.var.median, cur.var.sd, cur.var.sk), nrow = 4)
+knitr::kable(x = cur.var.matrix, col.names = c("Statistic", "Value"))
+```
+
+**Comments on Liveness:**
+Liveness is a measure of the probability of live performance. The distribution is very right-skewed and deviated from standard normal distribution. This indicates that more tracks in the chart are considered "studio".
+
+### Tempo
+
+#### Density plot, Box plot, and Normal Q-Q plot
+\
+```{r out.width = "50%"}
+cur.var <- spotify_data$Tempo
+# density plot
+a <- ggplot(spotify_data, aes(x = cur.var)) + xlab('Tempo') +
+  labs(title="Density plot of Tempo")
+a + 
+  geom_density() + 
+  geom_vline(aes(xintercept = mean(cur.var)), linetype = "dashed", size = 0.6)
+# boxplot
+boxplot(cur.var, xlab = 'All Tracks', ylab = 'Tempo', main = 'Box plot of Tempo')
+# qqplot
+qqnorm(cur.var, pch = 1, frame = FALSE)
+qqline(cur.var, col = "steelblue", lwd = 2)
+```
+
+```{r out.width = "50%"}
+# Measures of central tendency:
+cur.var.mean <- round(mean(cur.var), 3)
+cur.var.median <- round(median(cur.var), 3)
+```
+
+```{r out.width = "50%"}
+# Measures of dispersion and symmetry:
+cur.var.sd <- round(sd(cur.var), 3)
+cur.var.sk <- round(skewness(cur.var), 3)
+```
+
+```{r out.width = "50%"}
+# Table:
+cur.var.matrix <- matrix(c('Mean', 'Median', 'STD', 'Skewness', 
+                           cur.var.mean, cur.var.median, cur.var.sd, cur.var.sk), nrow = 4)
+knitr::kable(x = cur.var.matrix, col.names = c("Statistic", "Value"))
+```
+
+**Comments on Tempo:**
+Tempo is the average speed of a song measured in bpm. The skewness is only 0.3 which can be considered symmetrical. The shape of the distribution is multimodal (2-3 peaks). The distribution of the data mildly deviated from standard normal distribution. Based on the tempo markings, The mean tempo (122) lies in the Allegro (Fast) marking (120-168bpm).
+
+### Valence
+
+#### Density plot, Box plot, and Normal Q-Q plot
+\
+```{r out.width = "50%"}
+cur.var <- spotify_data$Valence
+# density plot
+a <- ggplot(spotify_data, aes(x = cur.var)) + xlab('Valence') +
+  labs(title="Density plot of Valence")
+a + 
+  geom_density() + 
+  geom_vline(aes(xintercept = mean(cur.var)), linetype = "dashed", size = 0.6)
+# boxplot
+boxplot(cur.var, xlab = 'All Tracks', ylab = 'Valence', main = 'Box plot of Valence')
+# qqplot
+qqnorm(cur.var, pch = 1, frame = FALSE)
+qqline(cur.var, col = "steelblue", lwd = 2)
+```
+
+```{r out.width = "50%"}
+# Measures of central tendency:
+cur.var.mean <- round(mean(cur.var), 3)
+cur.var.median <- round(median(cur.var), 3)
+```
+
+```{r out.width = "50%"}
+# Measures of dispersion and symmetry:
+cur.var.sd <- round(sd(cur.var), 3)
+cur.var.sk <- round(skewness(cur.var), 3)
+```
+
+```{r out.width = "50%"}
+# Table:
+cur.var.matrix <- matrix(c('Mean', 'Median', 'STD', 'Skewness', 
+                           cur.var.mean, cur.var.median, cur.var.sd, cur.var.sk), nrow = 4)
+knitr::kable(x = cur.var.matrix, col.names = c("Statistic", "Value"))
+```
+
+**Comments on Valence:**
+Valence measures the positiveness of the track. The skewness and shape shows the data distribution of this variable is very symmetrical. Overall the majority of the data seems aligned with standard normal distribution. And the line of symmetry locates at the middle (valence = 0.5) which means the mean positiveness of the charted track is very neutral.
+
+### Song Duration
+
+#### Density plot, Box plot, and Normal Q-Q plot
+\
+```{r out.width = "50%"}
+  #Density plot
+  a <- ggplot(spotify_data, aes(x = Duration..ms./1000))
+  a + geom_density() +
+      geom_vline(aes(xintercept = mean(Duration..ms./1000)), 
+                 linetype = "dashed", size = 0.6)+
+    labs(title="Density plot of song duration (seconds)", y="Density", x="Duration (s)")
+  
+  ##Boxplot
+  a +
+  geom_boxplot(fill='#A4A4A4', color="black")+
+  theme_classic()+
+  labs(title="Boxplot of song duration (seconds)", y="Density", x="Duration (s)")
+  
+  # qq plot
+  qqnorm(spotify_data$Duration..ms., pch = 1, frame = FALSE)
+  qqline(spotify_data$Duration..ms., col = "steelblue", lwd = 2)
+```
+
+Some summary statistics all in seconds
+```{r out.width = "50%"}
+# summary stats
+sd_dur <- sd(spotify_data$Duration..ms./1000)
+summary_dur <- as.numeric(summary(spotify_data$Duration..ms./1000))
+sk_dur <- round(skewness(spotify_data$Duration..ms.), 3)
+dur_matrix <- matrix(c("Mean", "SD", "Min", "1st Quartile", "Median", "3rd Quartile", "Max", 
+                       round(summary_dur[4],3), round(sd_dur,3), round(summary_dur[-4],3)), nrow = 7)
+knitr::kable(x = dur_matrix, col.names = c("Statistic", "Value (s)"))
+```
+
+**Comments on Song Duration:**
+The mean song duration is 198 seconds with a standard deviation of 47 seconds. The song duration is heavily concentrated between 100 and 300 seconds, and it's clear the data is not normally distributed as further evidenced by the heavy tails in our qq plot. There is far less data at the tails of this distribution then in a normal distrbution. Moreover, the data is right skewed which is expected as songs are generally short and have a minimum possible duration (0 seconds), but not a maximum.
+
+### Chord
+
+#### Frequency plot
+\
+```{r out.width = "50%"}
+# Frequency plot
+  a<- ggplot(spotify_data, aes(x = Chord))
+  a + 
+  geom_bar(fill = "grey") +
+  labs(title = "Frequency by chord\n", x = "Chord", y = "Frequency") +
+  theme_classic()
+```
+
+Some summary statistics
+```{r out.width = "50%"}
+# summary stats
+counts <- summary(spotify_data$Chord)[-1]
+percentages <- counts
+## convert counts into percentages
+for (i in 1:length(counts)) {
+  percentages[i] <- counts[i]/sum(counts)*100
+}
+cho_matrix <- matrix(c(levels(spotify_data$Chord)[-1], counts, round(percentages,3)), 
+                     nrow = length(counts))
+knitr::kable(x = cho_matrix, col.names = c("Chord", "Counts", "Percentages (%)"))
+```
+
+**Comments on Chord:**
+The majority of chords comprise around 8% of all songs. Interestingly, there are significantly more songs in the C#/Db chord (14%), and significantly less songs in the D#/Eb chord (3%).
+
+## Bivariate analysis:
+
+#### Pairwise Correlation Table and Scatter Plots
+\
+Since Chord is a categorical variable, we will do one analysis excluding chord. Then another, including it.
+
+```{r}
+# pairwise correlations
+pair_cor <- round(cor(spotify_data[-10]),2)
+colnames(pair_cor) <- c('Pop.', 'Dan.','Ene.', 'Lou.', 'Spe.', 'Aco.', 
+                        'Liv.', 'Tem.', 'Val.', 'Dur.')
+knitr::kable(pair_cor) %>%
+kableExtra::kable_styling(full_width = TRUE)
+# pairwise scatterplots
+pairs(spotify_data[-10])
+```
+
+**Comments:**
+Most of the data distributions are rather random with no specific trend. This indicates that Simple Linear Regression may not be a good candidate model.
+
+We'll consider variables with a magnitude of correlation between 0.3 and 0.5 to have low correlation, 0.5 and 0.7 to have moderate correlation, and 0.7 and 0.9 to have high correlation. 
+
+Low correlation: Acousticness and danceability (-0.32). Danceability and valence (0.36). Acousticness and loudness (-0.48).\
+Moderate correlation: Acousticness and energy (-0.54).\
+High correlation: Energy and loudness (0.73).
+
+### Plots of most correlated variables
+```{r out.width = "50%"}
+plot(spotify_data$Acousticness, spotify_data$Danceability, 
+     xlab = "Acousticness", ylab= "Danceability")
+plot(spotify_data$Valence, spotify_data$Danceability, 
+     xlab = "Valence", ylab= "Danceability")
+plot(spotify_data$Acousticness, spotify_data$Loudness, 
+     xlab = "Acousticness", ylab= "Loudness")
+plot(spotify_data$Acousticness, spotify_data$Energy, 
+     xlab = "Acousticness", ylab= "Energy")
+plot(spotify_data$Energy, spotify_data$Loudness, 
+     xlab = "Energy", ylab= "Loudness")
+```
+
+**Comments on Correlated Variables:**
+These correlations make sense. Songs that have one of the features among danceability, enery, loudness and valence will tend to exhibit the other features from anecdotal experience. By similar token, if the song is more acoustic, it will likely be less energetic and loud explaining the negative correlation.
+
+Now, we examine how each variable is distributed by its chord.
+
+### Boxplots of metrics by chord
+```{r out.width = "50%"}
+# boxplots
+boxplot(spotify_data$Popularity ~ as.factor(spotify_data$Chord), 
+        xlab= "Chord", ylab = "Popularity")
+boxplot(spotify_data$Danceability ~ as.factor(spotify_data$Chord), 
+        xlab= "Chord", ylab = "Danceability")
+boxplot(spotify_data$Energy ~ as.factor(spotify_data$Chord), 
+        xlab= "Chord", ylab = "Energy")
+boxplot(spotify_data$Loudness ~ as.factor(spotify_data$Chord), 
+        xlab= "Chord", ylab = "Loudness")
+boxplot(spotify_data$Speechiness ~ as.factor(spotify_data$Chord), 
+        xlab= "Chord", ylab = "Speechiness")
+boxplot(spotify_data$Acousticness ~ as.factor(spotify_data$Chord), 
+        xlab= "Chord", ylab = "Acousticness")
+boxplot(spotify_data$Liveness ~ as.factor(spotify_data$Chord), 
+        xlab= "Chord", ylab = "Liveness")
+boxplot(spotify_data$Tempo ~ as.factor(spotify_data$Chord), 
+        xlab= "Chord", ylab = "Tempo")
+boxplot(spotify_data$Valence ~ as.factor(spotify_data$Chord), 
+        xlab= "Chord", ylab = "Valence")
+boxplot(spotify_data$Duration..ms. ~ as.factor(spotify_data$Chord), 
+        xlab= "Chord", ylab = "Duration..ms.")
+```
+
+**Comments on Metrics by Chord:**
+There is no apparent trend or notable observation for the distributions of the variables separated by its chord. For the purposes of our research question, we could point out that songs in D#/Eb tend to have slightly more popularity.

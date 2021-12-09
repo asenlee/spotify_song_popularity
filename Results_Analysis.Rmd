@@ -1,0 +1,636 @@
+---
+title: "Predicting the popularity of a song based on Spotify sound/musical metrics"
+author: "Asen Lee"
+output:
+  pdf_document:
+    toc: no
+  bookdown::pdf_document2:
+    includes:
+      in_header: preamble.tex
+    number_sections: no
+    toc: no
+urlcolor: blue
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, error = TRUE, echo=FALSE)
+library(MASS)
+library(class)
+library(moments)
+library(ggplot2)
+library(GGally)
+library(psych)
+library(tidyverse)
+library(glmnet)
+library(rsample)      
+library(randomForest)
+library(ranger)
+library(caret)
+library(OneR)
+library(ROSE)
+library(rpart)
+library(pastecs)
+library(gridExtra)
+library(ggplotify)
+library(leaps)
+# Use set.seed for reproducibility
+set.seed(1234)
+```
+
+# Introduction
+
+We’re music lovers in the 21st century, so vinyls, CDs and iPods are long gone, and only streaming platforms like Spotify are popular now. When streaming music on Spotify, you're probably not thinking about how it classifies each song based on a variety of criteria. But it does! Spotify evaluates each music based on elements like danceability, energy, valence, and more. Curious about this exact thing, we found a dataset on Kaggle (link: https://www.kaggle.com/sashankpillai/spotify-top-200-charts-20202021) that was web scraped from the Spotify Web API, and we began to learn what characteristics are associated with driving music that became widely popular by looking into the measurements Spotify determines. We think this is an extremely worthwhile project because it’s immensely interesting to look into what makes a popular song.
+
+All our variables are just metrics from Spotify, and our explanations of the variables are from the Spotify Web API documentation.
+
+We want to find out how and the extent to which various audio features from Spotify metrics affect how popular a song gets.
+
+*The target/response variable:*
+Popularity: The popularity of the track. The value will be between 0 and 100, with 100 being the most popular.
+
+Predictor variables:\
+Danceability: Danceability describes how suitable a track is for dancing based on a combination of musical elements including tempo, rhythm, etc. A value of 0.0 is least danceable and 1.0 is most danceable.\
+Acousticness: A measure from 0.0 to 1.0 of whether the track is acoustic.
+Duration: The duration of the song in milliseconds (ms).\
+Energy: Energy is a measure from 0.0 to 1.0 and represents a perceptual measure of intensity and activity.\
+Liveness: Detects the presence of an audience in the recording.\
+Loudness: The overall loudness of a track in decibels (dB). Loudness values are averaged across the entire track.\
+Speechiness: Speechiness detects the presence of spoken words in a track.\
+Tempo: The overall estimated tempo of a track in beats per minute (BPM).\
+Valence: A measure from 0.0 to 1.0 describing the musical positiveness conveyed by a track. Tracks with high valence sound more positive, while tracks with low valence sound more negative.\
+Chord:A chord is any harmonic set of pitches/frequencies consisting of multiple notes that are heard as if sounding simultaneously.\
+
+We excluded Index, Song Name, Song ID, Release Date, etc. due to irrelevance to our aim, excluded Highest Charting Position, Number of Times Charted, Week of Highest Charting, Streams, Weeks Charted due to inaccessibility or blank values for the new songs.
+
+# Exploratory Data Analysis
+```{r}
+# load dataset, remove N/A
+spotify_data <- read.csv("spotify_dataset.csv")
+spotify_data <- spotify_data[complete.cases(spotify_data) , ]
+variables <- c("Popularity", "Danceability", "Energy", "Loudness", 
+               "Speechiness", "Acousticness", "Liveness", "Tempo", 
+               "Valence", "Chord", "Duration..ms.")
+spotify_data <- spotify_data[variables]
+spotify_data$Chord <- as.factor(spotify_data$Chord)
+# create training (70%) and test (30%) sets for the Spotify data.
+spotify_split <- initial_split(spotify_data, prop = .7)
+spotify_train <- training(spotify_split)
+spotify_test  <- testing(spotify_split)
+```
+
+## Pairwise Correlation Table and Scatter Plots
+\
+Since Chord is a categorical variable, we conducting one analysis excluding chord. Then another, including it (omitted here, but can be found in the Appendix).
+
+```{r out.width = "20%"}
+# pairwise correlations
+pair_cor <- round(cor(spotify_data[-10]),2)
+colnames(pair_cor) <- c('Pop.', 'Dan.','Ene.', 'Lou.', 'Spe.', 'Aco.', 
+                        'Liv.', 'Tem.', 'Val.', 'Dur.')
+# print in table
+knitr::kable(pair_cor, caption="Pairwise Correlation Table") %>%
+kableExtra::kable_styling(full_width = TRUE, latex_options = "hold_position")
+```
+
+Most of the data distributions are rather random with no specific trend. This indicates that Simple Linear Regression may not be a good candidate model.
+
+Low correlation: Acousticness and danceability (-0.32). Danceability and valence (0.36). Acousticness and loudness (-0.48).\
+Moderate correlation: Acousticness and energy (-0.54).\
+High correlation: Energy and loudness (0.73).
+
+## Plots of most correlated variables
+
+```{r out.width = "30%"}
+# plots of most correlated variables
+plot(spotify_data$Acousticness, spotify_data$Danceability, 
+     xlab = "Acousticness", ylab= "Danceability")
+plot(spotify_data$Valence, spotify_data$Danceability, 
+     xlab = "Valence", ylab= "Danceability")
+plot(spotify_data$Acousticness, spotify_data$Loudness, 
+     xlab = "Acousticness", ylab= "Loudness")
+plot(spotify_data$Acousticness, spotify_data$Energy, 
+     xlab = "Acousticness", ylab= "Energy")
+plot(spotify_data$Energy, spotify_data$Loudness, 
+     xlab = "Energy", ylab= "Loudness")
+```
+
+These correlations make sense. Songs that have one of the features among danceability, energy, loudness and valence will tend to exhibit the other features from anecdotal experience. By similar token, if the song is more acoustic, it will likely be less energetic and loud explaining the negative correlation.
+
+# Results and Analysis
+
+## Linear Regression and Polynomial Regression
+
+### Linear Regression
+
+First, we do linear regression on the training data using all predictors to get a full linear model and compute the LOO-CV.
+
+```{r ols}
+# compute full linear model
+ols <- lm(Popularity ~ . , data = spotify_train)
+x <- model.matrix(ols)
+x <- x[, -1] 
+y <- spotify_train$Popularity
+
+# function for loocv, calculating the RMSE
+loocv <- function(mdl) { 
+  sqrt(mean( residuals(mdl)^2 / 
+         (1 - hatvalues(mdl))^2 )) }
+
+# compute LOO-CV for full model
+loocv_ols <- round(loocv(ols),2)
+```
+
+The leave one out cross validation score for the full model is roughly 15.77. We have nothing to compare this to yet so we can't make a judgment on the model.
+
+```{r}
+# exhaustive selection on all possible subsets of models
+all_models <- regsubsets(Popularity~. -Chord, data=spotify_train, nvmax = 9)
+sum_of_all <- summary(all_models)
+
+# remove chord from data
+data_wo_chord <- spotify_train[-10]
+
+# compute LOO-CV for best subsets of each size
+cv_subsets <- double(9)
+for (i in 1:9) {
+  red_lm <- lm(Popularity~., data = data_wo_chord[sum_of_all$which[i,]])
+  cv_subsets[i] <- loocv(red_lm)
+}
+```
+
+When attempting to do an exhaustive selection on all model subsets, we notice there is a linear dependency found when we include chord in our model. This is likely because  a particular pair of chords are linearly dependent with each other. Moreover, since chord did not seem to have any relationship with popularity (nor any of the other variables), we are comfortable in excluding it for this portion of our analysis. 
+
+From the left plot below, we notice that the full model has the largest LOOCV score. The scores are in a parabolic shape, where they decrease monotonically until the minimum at 3 predictors After that, the LOOCV scores increase monotonically. The model with 3 predictors has Loudness, Tempo and Duration. This reduced model performs slightly better than the full model, with a LOOCV score of 15.65.
+
+### Polynomial Regression
+
+Here, we attempt to see if there may be any polynomial relationship between the variables and popularity
+
+```{r poly}
+# initialize number of degrees and CV score vector
+nmods <- 10
+cvscores <- double(nmods)
+
+# compute LOO-CV for each model
+for (i in 1:nmods) {
+  cvscores[i] <- loocv(
+    poly_reg <- lm(Popularity ~ poly(Danceability, i) + poly(Energy, i) + 
+               poly(Loudness, i) + poly(Speechiness, i) + poly(Acousticness, i) +
+                 poly(Liveness, i) + poly(Tempo, i) + Chord +
+                 poly(Valence, i) + poly(Duration..ms., i), data = spotify_train)
+  )
+}
+```
+
+For a particular degree, $i$, we do linear regression on the full model including each numerical variable to a power between $1$ to $i$. The below plot on the right shows the log of the LOOCV scores (since they grow drastically) for each polynomial model for each degree $i$. As we can see, increasing the degree of the full model makes the prediction ability worse (except for degree 8). The best model is in fact the original one with degree 1. This is likely because there is no polynomial relationship between the variables and popularity, and the additional predictors only serve in overfitting the model.
+
+### Plots
+\
+```{r lrfigures, fig.height=4, fig.width=10}
+par(mfrow=c(1,2))
+# plot of LOO-CV vs. number of predictors
+plot(1:9, cv_subsets, main = "Leave one out CV Score for Model Subsets", xlab = "Number of predictors", ylab = "LOOCV score")
+# plot LOO-CV vs. model degree
+plot (1:10, log(cvscores), main = "Leave one out CV Score for Polynomial Models", xlab = "Degree of model", ylab = "Log of LOOCV score")
+```
+
+## LASSO Regression
+
+Second, we build another model using LASSO in favor of regularization and variable selection.
+\
+```{r out.width = "50%"}
+# prepare for lasso
+ols_for_lasso <- lm(Popularity ~ . , data = spotify_data)
+x_for_lasso <- model.matrix(ols_for_lasso)
+x_for_lasso <- x_for_lasso[, -1] 
+y_for_lasso <- spotify_data$Popularity
+
+# lasso across [-20, 20] lambdas
+lambdas <- exp(seq(-20, 20, length = 50))
+lasso <- cv.glmnet(x = x_for_lasso, y = y_for_lasso, nfolds = 20, alpha = 1,
+                   family = "gaussian", intercept = TRUE)
+rmse_lasso <- sqrt(min(lasso$cvm))
+
+# coefficients and plot
+coefs <- coefficients(lasso, s = "lambda.min")
+bp <- barplot(coefs[-1], main = "Coefficients for LASSO")
+axis(1, at = bp, labels=coefs@Dimnames[[1]][-1], tck=.01, cex.axis=0.9, srt=45, col.ticks = "grey", las=2) # shrinks axis labels
+
+# plot CV curve
+plot(lasso, main = "CV Curve")
+abline(v = sum(abs(coef(lasso))))
+
+# comparing regularizes
+lasso_best_lam <- lasso$lambda.min
+coefs_lasso = coefficients(lasso, s = "lambda.min")
+var_names <- c(names(ols$coefficients))
+ols_est <- as.numeric(ols$coefficients)
+lasso_est <- as.numeric(coefs_lasso)
+var_names <- var_names[-1]
+ols_est <- ols_est[-1]
+lasso_est <- lasso_est[-1]
+
+# plot the comparison
+df <- data.frame(var_names, ols_est, lasso_est)
+ggplot(data = df, aes(x = ols_est, y = var_names)) + geom_point(color='blue') +
+  geom_point(aes(lasso_est), color = 'orange') +
+  xlab("Coefficient Estimates") + ylab("Variable Names") +
+  ggtitle("Comparing Regularizers")
+```
+
+We obtain an RMSE of 15.8894 using the minimum lambda that gives the lowest CV error. We can also see from the CV curve that the minimum lambda is 0.2319 and the largest value of lambda within 1 standard error of lambda_min is 1.9703. Furthermore, by using LASSO, the coefficients for Danceability, Energy, Speechiness, ChordD, ChordF#/Gb, ChordG, and ChordG#/Ab have been removed by variable selection. It is also observed that the coefficient for Duration..ms. is very small. From the plot of regularizers above, it can be seen that the coefficient estimates for the OLS estimates vary slightly more than the LASSO estimates. The coefficient estimates for LASSO calculated from lambda_min are mostly smaller in magnitude and LASSO has coefficient estimates that are 0, which is expected.
+
+## Random Forest Regression
+
+### Basic Implementation and Predictive Accuracy
+
+First, we start the random forest regression model with a basic approach. The model is build by library randomForest. And we use full model for the formula.
+\
+``` {r random forest regression}
+# Followed the tutorial from https://uc-r.github.io/random_forests
+
+# default RF model
+rf1 <- randomForest(
+  formula = Popularity ~ .,
+  data    = spotify_train
+)
+
+# plot the 
+plot1 <- as.ggplot(~plot(rf1, main="Random Forest MSE vs. Trees"))
+
+# number of trees with lowest MSE
+rf_mintree <- which.min(rf1$mse)
+
+# RMSE of this optimal random forest
+rf_rmse <- sqrt(rf1$mse[which.min(rf1$mse)])
+```
+``` {r combfig1, fig.height=5, fig.width=15}
+# A natural benefit of the bootstrap resampling process is that random forests have an out-of-bag (OOB) sample that provides an efficient and reasonable approximation of the test error.
+
+# create training and validation data within training set
+valid_split <- initial_split(spotify_train, .8)
+spotify_train_v2 <- analysis(valid_split)
+
+# validation data
+spotify_valid <- assessment(valid_split)
+x_test <- spotify_valid[setdiff(names(spotify_valid), "Popularity")]
+y_test <- spotify_valid$Popularity
+
+rf_oob_comp <- randomForest(
+  formula = Popularity ~ .,
+  data    = spotify_train_v2,
+  xtest   = x_test,
+  ytest   = y_test
+)
+
+# extract OOB & validation errors
+oob <- sqrt(rf_oob_comp$mse)
+validation <- sqrt(rf_oob_comp$test$mse)
+
+# compare error rates
+plot2 <- tibble::tibble(
+  `Out of Bag Error` = oob,
+  `Test error` = validation,
+  ntrees = 1:rf_oob_comp$ntree
+) %>%
+  gather(Metric, RMSE, -ntrees) %>%
+  ggplot(aes(ntrees, RMSE, color = Metric)) +
+  geom_line() +
+  scale_y_continuous(labels = scales::dollar) +
+  ggtitle("Random Forest: RMSE vs. Number of trees") +
+  xlab("Number of trees") +
+  ylab("RMSE")
+
+# grid plot
+grid.arrange(plot1, plot2, nrow = 1, ncol = 2, widths = 2:3)
+```
+
+The figure on the left showed the MSE vs. Model's tree number. The optimal base model has 484 number of trees and gives us 15.94 RMSE. We also used a validation set (by splitting the training set) to evaluate the prediction capability. As shown by the figure on the right, the out-of-bag error is around 17 and the test error is around 13 which is close to the basic model's RMSE. Random Forest Regression model showed a promising prediction ability.
+
+### Tuning
+
+Next step, we fine-tuned the hyperparameters of the model, namely, "the number of trees: num.trees", "the number of variables to randomly sample as candidates at each split: mtry", "min number of samples within the terminal nodes: node_size", and "the fraction of samples to train on: sample_size". We used grid search method to find the optimal combinations.
+
+``` {r}
+# names of features
+features <- setdiff(names(spotify_train), "Popularity")
+
+# hyperparameter grid search
+hyper_grid <- expand.grid(
+  num.trees  = seq(50, 500, by = 50),
+  mtry       = seq(1, 5, by = 2),
+  node_size  = seq(3, 7, by = 2),
+  sample_size = c(.55, .632, .70, .80),
+  OOB_RMSE   = 0
+)
+
+# traverse the hyper grid to find the optimal combination
+for(i in 1:nrow(hyper_grid)) {
+  # train model
+  model <- ranger(
+    formula         = Popularity ~ ., 
+    data            = spotify_train, 
+    num.trees       = hyper_grid$num.trees[i],
+    mtry            = hyper_grid$mtry[i],
+    min.node.size   = hyper_grid$node_size[i],
+    sample.fraction = hyper_grid$sample_size[i],
+    seed            = 1234
+  )
+  
+  # add OOB error to grid
+  hyper_grid$OOB_RMSE[i] <- sqrt(model$prediction.error)
+}
+
+hyper_grid %>% 
+  dplyr::arrange(OOB_RMSE) %>%
+  head(5)
+```
+
+The listed combinations are the top 5 most optimal ones. To improve the prediction capability, we should choose the simpler model with decent RMSE. Thus, the second one with much smaller tree size is chose.
+
+We repeated this optimal model 100 times to get a better expectation of error rate.
+\
+``` {r}
+# Currently, the best random forest model we have found retains columnar categorical variables and uses num.trees = 150, mtry = 1, terminal node size of 5 observations, and a sample size of 70%. Lets repeat this model to get a better expectation of our error rate.
+OOB_RMSE <- vector(mode = "numeric", length = 100)
+
+# use the optimal model to simulate the RMSE 100 times repeatedly
+for(i in seq_along(OOB_RMSE)) {
+
+  optimal_ranger <- ranger(
+    formula         = Popularity ~ ., 
+    data            = spotify_train, 
+    num.trees       = 150,
+    mtry            = 1,
+    min.node.size   = 5,
+    sample.fraction = .7,
+    importance      = 'impurity'
+  )
+  
+  OOB_RMSE[i] <- sqrt(optimal_ranger$prediction.error)
+}
+
+# plot the histogram of the RMSE distribution
+plot1 <- data_frame(val = OOB_RMSE) %>%
+  ggplot(aes(val)) +
+  geom_histogram() +
+  ggtitle("Histogram of OOB RMSE") +
+  xlab("Out-of-bag RMSE") +
+  ylab("Frequency")
+```
+``` {r combfig2, fig.height=5, fig.width=15}
+# plot the most important variables
+plot2 <- optimal_ranger$variable.importance %>% 
+  tidy() %>%
+  dplyr::arrange(desc(x)) %>%
+  dplyr::top_n(11) %>%
+  ggplot(aes(reorder(names, x), x)) +
+  geom_col() +
+  coord_flip() +
+  ggtitle("Top 11 important variables")
+grid.arrange(plot1, plot2, nrow=1, ncol=2, widths = 1:2)
+```
+
+The error rate is around 15.9 as shown on the left figure.
+
+Based on this model, we plotted the importance of each variables on the right. Loudness is the most important one. And the Chord is the least one. This result agrees with a trend called "The Loudness War" [https://www.npr.org/2009/12/31/122114058/the-loudness-wars-why-music-sounds-worse]. The other variables are about the same and close to Loudness.
+
+``` {r}
+# training set error
+pred_ranger_train <- predict(optimal_ranger, spotify_train)
+rmse_optimal_ranger_train <- sqrt(mean((spotify_train$Popularity - pred_ranger_train$predictions)^2))
+# test set error
+pred_ranger_test <- predict(optimal_ranger, spotify_test)
+rmse_optimal_ranger_test <- sqrt(mean((spotify_test$Popularity - pred_ranger_test$predictions)^2))
+```
+
+Finally, this model got a training RMSE of 9.98 and test RMSE of 15.71. As the scale of Popularity is 100, the test error of 15 suggests an adequate prediction capability of the Random Forest Regression model. 
+
+## Ensemble method
+
+Our last attempt is an ensemble method where we train our model using a combination of our above models. We will give each model a weight. Then the ensemble method's prediction for a particular training response value is the weighted mean of each model's prediction.
+
+The first weighting scheme is simply giving each model an equal weight. We get a training RMSE of 13.71. We next attempt three very basic weighting schemes. In each scheme, we give one model a weight of $1/2$ for the prediction and the other two models a weight of $1/4$. This is so we can observe whether we can perform better if certain models contribute more to the predictions. We find that when giving more weight to Random Forest Regression, we achieve the lowest RMSE at 12.76. 
+
+```{r}
+# initialize ensemble predictions vector
+ndx <- length(spotify_train$Popularity)
+ensemble_pred <- double(ndx)
+
+# model training predictions 
+red_linear_model <- lm(Popularity~Loudness + Tempo + Duration..ms., data=spotify_train) 
+red_lm_preds <- predict(red_linear_model)
+lasso_preds <- predict(lasso, x, s = "lambda.1se")
+rfr_preds <- predict(optimal_ranger, spotify_train)$predictions
+
+
+# weights for models
+A <- 1/3
+B <- 1/3
+C <- 1/3
+
+# get predictions
+for (i in 1:ndx) {
+  ensemble_pred[i] <- sum(as.numeric(c(A*red_lm_preds[i],
+                                   B*lasso_preds[i], 
+                                   C*rfr_preds[i])))
+}
+
+# compute rmse
+rmse_ensemble_pred_1 <- round(sqrt(mean((ensemble_pred-spotify_train$Popularity)^2)),2)
+
+```
+
+```{r}
+# weights for models
+A <- 1/2
+B <- 1/4
+C <- 1/4
+
+# get predictions
+for (i in 1:ndx) {
+  ensemble_pred[i] <- sum(as.numeric(c(A*red_lm_preds[i],
+                                   B*lasso_preds[i], 
+                                   C*rfr_preds[i])))
+}
+
+# compute rmse
+rmse_ensemble_pred_2 <- round(sqrt(mean((ensemble_pred-spotify_train$Popularity)^2)),2)
+```
+
+```{r}
+# weights for models
+A <- 1/4
+B <- 1/2
+C <- 1/4
+
+# get predictions
+for (i in 1:ndx) {
+  ensemble_pred[i] <- sum(as.numeric(c(A*red_lm_preds[i],
+                                   B*lasso_preds[i], 
+                                   C*rfr_preds[i])))
+}
+
+# compute rmse
+rmse_ensemble_pred_3 <- round(sqrt(mean((ensemble_pred-spotify_train$Popularity)^2)),2)
+```
+
+```{r}
+# weights for models
+A <- 1/4
+B <- 1/4
+C <- 1/2
+
+# get predictions
+for (i in 1:ndx) {
+  ensemble_pred[i] <- sum(as.numeric(c(A*red_lm_preds[i],
+                                   B*lasso_preds[i], 
+                                   C*rfr_preds[i])))
+}
+
+# compute rmse
+rmse_ensemble_pred_4 <- round(sqrt(mean((ensemble_pred-spotify_train$Popularity)^2)),2)
+```
+
+```{r}
+# create table
+rmse_ensemble.matrix <- matrix(c('Equal','More for LM','More for Lasso','More for RFR',
+                              rmse_ensemble_pred_1, rmse_ensemble_pred_2,
+                              rmse_ensemble_pred_3, rmse_ensemble_pred_4), nrow = 4)
+knitr::kable(x = rmse_ensemble.matrix, col.names = c("Model", "RMSE"), caption="Ensemble methods' RMSE") %>%
+kableExtra::kable_styling(latex_options = "hold_position")
+```
+
+
+
+## Training vs Test in all models
+
+Finally, we will compare our various models on their performance on predicting test data. As shown below, the reduced linear model performs best and the random forest regression does worst. Nonetheless, all models perform similarly. 
+
+```{r}
+# LM with 3 predictors
+rmse_red_lm_train <- round(sqrt(mean((predict(red_linear_model, newdata=spotify_train)-spotify_train$Popularity)^2)), 2)
+rmse_red_lm_test <- round(sqrt(mean((predict(red_linear_model, newdata=spotify_test)-spotify_test$Popularity)^2)), 2)
+
+# LASSO
+ols_new <- lm(Popularity ~ . , data = spotify_test)
+x_new <- model.matrix(ols_new)
+x_new <- x_new[, -1] 
+rmse_lasso_train <- round(sqrt(mean((predict(lasso, x, s = "lambda.1se")-spotify_train$Popularity)^2)), 2)
+rmse_lasso_test <- round(sqrt(mean((predict(lasso, x_new, s = "lambda.1se")-spotify_test$Popularity)^2)), 2)
+
+# RFR
+rmse_rfr_train <- round(rmse_optimal_ranger_train, 2)
+rmse_rfr_test <- round(rmse_optimal_ranger_test, 2)
+
+# model test predictions 
+red_lm_preds <- predict(red_linear_model, newdata = spotify_test)
+lasso_preds <- predict(lasso, x_new, s = "lambda.1se")
+rfr_preds <- predict(optimal_ranger, spotify_test)$predictions
+
+# initialize ensemble predictions vector for test
+ndx <- length(spotify_test$Popularity)
+ensemble_pred <- double(ndx)
+
+# weights for models
+A <- 1/3
+B <- 1/3
+C <- 1/3
+
+for (i in 1:ndx) {
+  ensemble_pred[i] <- sum(as.numeric(c(A*red_lm_preds[i],
+                                   B*lasso_preds[i], 
+                                   C*rfr_preds[i])))
+}
+rmse_ensemble_pred_test_eq <- round(sqrt(mean((ensemble_pred-spotify_test$Popularity)^2)), 2)
+
+# weights for models
+A <- 1/4
+B <- 1/4
+C <- 1/2
+
+# calculate the mean of the predictions of all 3 models for each new data entry
+for (i in 1:ndx) {
+  ensemble_pred[i] <- sum(as.numeric(c(A*red_lm_preds[i],
+                                   B*lasso_preds[i], 
+                                   C*rfr_preds[i])))
+}
+
+rmse_ensemble_pred_test_rfr <- round(sqrt(mean((ensemble_pred-spotify_test$Popularity)^2)), 2)
+
+# Table
+finalerror.matrix <- matrix(c('Reduced LM','LASSO','Random Forest',  'Equal W Ensemble', 'RFR> Ensemble',
+                              rmse_red_lm_train, rmse_lasso_train, rmse_rfr_train, rmse_ensemble_pred_4, rmse_ensemble_pred_3,
+                              rmse_red_lm_test, rmse_lasso_test, rmse_rfr_test, rmse_ensemble_pred_test_eq, rmse_ensemble_pred_test_rfr), nrow = 5)
+knitr::kable(x = finalerror.matrix, col.names = c("Model", "RMSE Training", "RMSE Test"), caption="Training and test RMSE for all methods") %>%
+kableExtra::kable_styling(latex_options = "hold_position")
+```
+
+# Conclusion
+
+Were we able to successfully answer our research question of predicting the popularity of a song based on the metrics Spotify releases publicly? We would like to say yes, to a certain extent, but we must concede and acknowledge that it's impossible to ALWAYS (or even most of the time) predict whether a song will be popular or not. A huge part of that is because some very significant elements appear to be at play in deciding popularity that aren't necessarily accounted for in this dataset.
+
+Some factors we came up with that may influence popularity include asking whether there is current awareness of a certain artist, if the artist in question has had a great career so far, previous smash hits, and generally what their track record has been, what genres the artist dabbles in, and what genres are currently popular, and whether the artist worked with other well-known or celebrated musical artists. 
+
+We believe that combining the information we got from the dataset with the added answers to some of the aforementioned questions would result in a far more accurate prediction of song popularity.
+
+From a technical perspective, another limitation of our project is that our Random Forest method leads to overfitting. As shown in the Table 2, The training error is much lower than the test error. The Reduced Linear Method and LASSO are okay from an over/underfitting point of view.
+
+### Which predictors seem to be more important and why?
+
+The three models we chose all had different significant variables. Specifically, the Reduced Linear Model had Loudness, Tempo, and Duration; LASSO had Loudness, Acousticness, Liveness; Random Forest had Loudness, Accousticness, Speechiness.
+
+The predictors all three have in common is Loudness, which makes sense considering that hip-hop is the most popular genre at the moment, and it revolves around this.
+
+### Can we generalize our results to other data?
+
+Not really, unfortunately. This dataset contains instances of popular songs on Spotify from 2020 to 2021, so using our results wouldn’t work for data containing songs from any other time in history (and probably, the future). Moreover, our dataset only had 1517 songs. Spotify alone has over 70 million songs as of today. Our results would definitely not be a good fit for ALL songs available on Spotify.
+
+Moreover, everything we’ve done is based on Spotify data, and they regularly tune up their algorithms so their metrics might change over time. This would make generalizing close to impossible.
+
+### Other possible research questions that may have arisen
+
+Considering the current status of modern music and how it is widely consumed (sorry dad, your cassettes don’t quite count here), it might be sensible to investigate more variables. To name a few:
+\
+- An artist’s following on social media
+\
+- Whether an artist is signed to a major record label. If yes, which? The big four record labels drastically improve the chances of having popularity, since they have deep pockets for advertising and amazing production capacity.
+\
+- A "nostalgia" rating. A lot of dads (and granddads) have transitioned to using streaming platforms.
+
+We could also break down song popularity into subsets based on demographics such as language, region, whose account is streaming, what sort of devices are being used to stream music, etc. It would be so, so cool to observe if our mode accuracy improves with this information added to our dataframe, and could let us find a reliable way of predicting song popularity. This would be invaluable to artists and record labels, as they could just see what goes into making a song popular and stick to that formula to keep generating hits. We could probably feed the model into an AI that would make music based on this information. So much scope!
+
+\pagebreak
+
+# Appendix
+
+As mentioned in the EDA section of the report, we examined how each variable is distributed by its chord.
+
+## Boxplots of metrics by chord
+\
+```{r out.width = "50%"}
+# boxplots
+boxplot(spotify_data$Popularity ~ as.factor(spotify_data$Chord),
+        xlab= "Chord", ylab = "Popularity")
+boxplot(spotify_data$Danceability ~ as.factor(spotify_data$Chord),
+        xlab= "Chord", ylab = "Danceability")
+boxplot(spotify_data$Energy ~ as.factor(spotify_data$Chord),
+        xlab= "Chord", ylab = "Energy")
+boxplot(spotify_data$Loudness ~ as.factor(spotify_data$Chord),
+        xlab= "Chord", ylab = "Loudness")
+boxplot(spotify_data$Speechiness ~ as.factor(spotify_data$Chord),
+        xlab= "Chord", ylab = "Speechiness")
+boxplot(spotify_data$Acousticness ~ as.factor(spotify_data$Chord),
+        xlab= "Chord", ylab = "Acousticness")
+boxplot(spotify_data$Liveness ~ as.factor(spotify_data$Chord),
+        xlab= "Chord", ylab = "Liveness")
+boxplot(spotify_data$Tempo ~ as.factor(spotify_data$Chord),
+        xlab= "Chord", ylab = "Tempo")
+boxplot(spotify_data$Valence ~ as.factor(spotify_data$Chord),
+        xlab= "Chord", ylab = "Valence")
+boxplot(spotify_data$Duration..ms. ~ as.factor(spotify_data$Chord),
+        xlab= "Chord", ylab = "Duration..ms.")
+```
+
+**Comments on Metrics by Chord:**
+There is no apparent trend or notable observation for the distributions of the variables separated by its chord. For the purposes of our research question, we could point out that songs in D#/Eb tend to have slightly more popularity.
